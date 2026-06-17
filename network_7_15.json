@@ -1,0 +1,97 @@
+{
+  "components": [
+    {
+      "id": 1,
+      "name": "1/3#1",
+      "type": "splitter",
+      "ratio_type": 3
+    },
+    {
+      "id": 2,
+      "name": "1/3#2",
+      "type": "splitter",
+      "ratio_type": 3
+    },
+    {
+      "id": 3,
+      "name": "1/2#3",
+      "type": "splitter",
+      "ratio_type": 2
+    },
+    {
+      "id": 4,
+      "name": "Merger2#4",
+      "type": "merger",
+      "input_count": 2
+    },
+    {
+      "id": 5,
+      "name": "1/3#5",
+      "type": "splitter",
+      "ratio_type": 3
+    },
+    {
+      "id": 6,
+      "name": "Merger3#6",
+      "type": "merger",
+      "input_count": 3
+    }
+  ],
+  "connections": [
+    {
+      "src_id": 3,
+      "src_port": 0,
+      "dst_id": 2,
+      "dst_port": -1,
+      "is_feedback": false
+    },
+    {
+      "src_id": 4,
+      "src_port": -1,
+      "dst_id": 3,
+      "dst_port": -1,
+      "is_feedback": false
+    },
+    {
+      "src_id": 2,
+      "src_port": 0,
+      "dst_id": 4,
+      "dst_port": 1,
+      "is_feedback": true
+    },
+    {
+      "src_id": 2,
+      "src_port": 1,
+      "dst_id": 5,
+      "dst_port": -1,
+      "is_feedback": false
+    },
+    {
+      "src_id": 1,
+      "src_port": 0,
+      "dst_id": 6,
+      "dst_port": 0,
+      "is_feedback": false
+    },
+    {
+      "src_id": 5,
+      "src_port": 0,
+      "dst_id": 6,
+      "dst_port": 1,
+      "is_feedback": false
+    },
+    {
+      "src_id": 5,
+      "src_port": 1,
+      "dst_id": 6,
+      "dst_port": 2,
+      "is_feedback": false
+    }
+  ],
+  "meta": {
+    "total_ext_input": "7/15",
+    "pool_log": [],
+    "component_count": 6,
+    "connection_count": 7
+  }
+}

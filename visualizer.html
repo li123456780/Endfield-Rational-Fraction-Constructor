@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>分流器网络可视化</title>
+<style>
+  body { margin: 0; background: #1a2f1a; overflow: hidden; font-family: "Microsoft YaHei", sans-serif; }
+  canvas { display: block; }
+  #ui {
+    position: absolute; top: 10px; left: 10px; z-index: 10;
+    color: #fff; background: rgba(0,0,0,0.55); padding: 12px 14px;
+    border-radius: 8px; backdrop-filter: blur(4px);
+    max-width: 320px;
+  }
+  #ui h3 { margin: 0 0 8px; font-size: 14px; color: #f1c40f; }
+  #ui input[type=file] { color: #fff; font-size: 12px; margin-bottom: 8px; }
+  #ui button {
+    background: #2c3e50; color: #f1c40f; border: 1px solid #f1c40f;
+    padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+    margin-right: 6px; margin-bottom: 4px;
+  }
+  #ui button:hover { background: #f1c40f; color: #2c3e50; }
+  #info { margin-top: 6px; font-size: 11px; opacity: 0.85; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <h3>分流器网络可视化</h3>
+  <div><input type="file" id="jsonFile" accept=".json"></div>
+  <div>
+    <button onclick="app.resetCamera()">重置视角</button>
+    <button onclick="app.toggleAnimation()">暂停/播放</button>
+  </div>
+  <div id="info">拖拽平移，滚轮缩放</div>
+</div>
+<canvas id="canvas"></canvas>
+
+<script>
+// ==================== 默认数据：7/15 网络 ====================
+const DEFAULT_DATA = {
+  "components": [
+    {"id": 1, "name": "1/3#1", "type": "splitter", "ratio_type": 3},
+    {"id": 2, "name": "1/3#2", "type": "splitter", "ratio_type": 3},
+    {"id": 3, "name": "1/2#3", "type": "splitter", "ratio_type": 2},
+    {"id": 4, "name": "Merger2#4", "type": "merger", "input_count": 2},
+    {"id": 5, "name": "1/3#5", "type": "splitter", "ratio_type": 3},
+    {"id": 6, "name": "Merger3#6", "type": "merger", "input_count": 3}
+  ],
+  "connections": [
+    {"src_id": 3, "src_port": 0, "dst_id": 2, "dst_port": -1, "is_feedback": false},
+    {"src_id": 4, "src_port": -1, "dst_id": 3, "dst_port": -1, "is_feedback": false},
+    {"src_id": 2, "src_port": 0, "dst_id": 4, "dst_port": 1, "is_feedback": true},
+    {"src_id": 2, "src_port": 1, "dst_id": 5, "dst_port": -1, "is_feedback": false},
+    {"src_id": 1, "src_port": 0, "dst_id": 6, "dst_port": 0, "is_feedback": false},
+    {"src_id": 5, "src_port": 0, "dst_id": 6, "dst_port": 1, "is_feedback": false},
+    {"src_id": 5, "src_port": 1, "dst_id": 6, "dst_port": 2, "is_feedback": false}
+  ],
+  "meta": {"total_ext_input": "7/15", "pool_log": [], "component_count": 6, "connection_count": 7}
+};
+
+// ==================== 可视化引擎 ====================
+class Visualizer {
+  constructor() {
+    this.canvas = document.getElementById('canvas');
+    this.ctx = this.canvas.getContext('2d');
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+
+    this.data = null;
+    this.nodes = new Map();
+    this.edges = [];
+    this.bridges = [];
+    this.particles = [];
+    this.camera = { x: 0, y: 0, zoom: 1 };
+    this.dragging = false;
+    this.lastMouse = { x: 0, y: 0 };
+    this.animating = true;
+    this.time = 0;
+
+    this.setupInput();
+    this.loadData(DEFAULT_DATA);
+    this.loop();
+  }
+
+  resize() {
+    this.canvas.width = window.innerWidth;
+    this.canvas.height = window.innerHeight;
+  }
+
+  setupInput() {
+    const fileInput = document.getElementById('jsonFile');
+    fileInput.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => {
+        try {
+          const data = JSON.parse(ev.target.result);
+          this.loadData(data);
+          document.getElementById('info').textContent = `已加载: ${file.name}`;
+        } catch (err) {
+          alert('JSON 解析失败: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    this.canvas.addEventListener('mousedown', e => {
+      this.dragging = true;
+      this.lastMouse = { x: e.clientX, y: e.clientY };
+    });
+    window.addEventListener('mouseup', () => this.dragging = false);
+    window.addEventListener('mousemove', e => {
+      if (!this.dragging) return;
+      const dx = e.clientX - this.lastMouse.x;
+      const dy = e.clientY - this.lastMouse.y;
+      this.camera.x += dx;
+      this.camera.y += dy;
+      this.lastMouse = { x: e.clientX, y: e.clientY };
+    });
+    this.canvas.addEventListener('wheel', e => {
+      e.preventDefault();
+      const zoomSpeed = 0.001;
+      const oldZoom = this.camera.zoom;
+      this.camera.zoom *= Math.exp(-e.deltaY * zoomSpeed);
+      this.camera.zoom = Math.max(0.2, Math.min(5, this.camera.zoom));
+      // 以鼠标为中心缩放
+      const rect = this.canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      this.camera.x = mx - (mx - this.camera.x) * (this.camera.zoom / oldZoom);
+      this.camera.y = my - (my - this.camera.y) * (this.camera.zoom / oldZoom);
+    }, { passive: false });
+  }
+
+  resetCamera() {
+    this.camera = { x: 0, y: 0, zoom: 1 };
+  }
+
+  toggleAnimation() {
+    this.animating = !this.animating;
+  }
+
+  loadData(data) {
+    this.data = data;
+    this.nodes.clear();
+    this.edges = [];
+    this.bridges = [];
+    this.particles = [];
+    this.computeLayout(data);
+    this.computeEdgeRoutes();
+    this.detectBridges();
+    this.initParticles();
+    this.updateInfo(data);
+    this.centerCamera();
+  }
+
+  centerCamera() {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    this.nodes.forEach(n => {
+      minX = Math.min(minX, n.x - n.w / 2);
+      maxX = Math.max(maxX, n.x + n.w / 2);
+      minY = Math.min(minY, n.y - n.h / 2);
+      maxY = Math.max(maxY, n.y + n.h / 2);
+    });
+    if (!isFinite(minX)) return;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const scaleX = W / (maxX - minX + 180);
+    const scaleY = H / (maxY - minY + 180);
+    this.camera.zoom = Math.min(1.3, Math.min(scaleX, scaleY));
+    this.camera.x = (W / 2 - cx) * this.camera.zoom;
+    this.camera.y = (H / 2 - cy) * this.camera.zoom;
+  }
+
+  updateInfo(data) {
+    const m = data.meta || {};
+    const lines = [
+      `组件: ${m.component_count || data.components.length}`,
+      `连接: ${m.connection_count || data.connections.length}`,
+      `目标输入: ${m.total_ext_input || '-'}`,
+      `拖拽平移 / 滚轮缩放`
+    ];
+    document.getElementById('info').innerHTML = lines.join('<br>');
+  }
+
+  // ---------- 布局 ----------
+  computeLayout(data) {
+    const comps = data.components;
+    const conns = data.connections;
+    const normalConns = conns.filter(c => !c.is_feedback);
+    const fbConns = conns.filter(c => c.is_feedback);
+
+    comps.forEach(c => {
+      this.nodes.set(String(c.id), {
+        id: c.id, name: c.name, type: c.type, data: c,
+        x: 0, y: 0, layer: 0, order: 0, w: 46, h: 46
+      });
+    });
+
+    // Kahn 拓扑分层（忽略 feedback）
+    const indeg = new Map();
+    this.nodes.forEach((n, id) => indeg.set(id, 0));
+    normalConns.forEach(e => {
+      const dst = String(e.dst_id);
+      indeg.set(dst, indeg.get(dst) + 1);
+    });
+
+    const queue = [];
+    this.nodes.forEach((n, id) => { if (indeg.get(id) === 0) queue.push(id); });
+
+    let layerIdx = 0;
+    const visited = new Set();
+    while (queue.length) {
+      const nextQ = [];
+      const size = queue.length;
+      for (let i = 0; i < size; i++) {
+        const id = queue[i];
+        this.nodes.get(id).layer = layerIdx;
+        visited.add(id);
+        normalConns.forEach(e => {
+          if (String(e.src_id) === id) {
+            const dst = String(e.dst_id);
+            indeg.set(dst, indeg.get(dst) - 1);
+            if (indeg.get(dst) === 0 && !visited.has(dst)) nextQ.push(dst);
+          }
+        });
+      }
+      queue.length = 0;
+      queue.push(...nextQ);
+      layerIdx++;
+    }
+
+    // 环中未访问节点：放到其所有前驱中最小层号的左侧
+    this.nodes.forEach((n, id) => {
+      if (!visited.has(id)) {
+        let minL = Infinity;
+        normalConns.forEach(e => {
+          if (String(e.dst_id) === id && visited.has(String(e.src_id))) {
+            minL = Math.min(minL, this.nodes.get(String(e.src_id)).layer);
+          }
+        });
+        n.layer = (minL === Infinity) ? 0 : Math.max(0, minL - 1);
+      }
+    });
+
+    // 按层分组
+    const layers = [];
+    this.nodes.forEach(n => {
+      if (!layers[n.layer]) layers[n.layer] = [];
+      layers[n.layer].push(n);
+    });
+
+    // 初始顺序按 id
+    layers.forEach(L => L.sort((a, b) => a.id - b.id));
+    layers.forEach(L => L.forEach((n, i) => n.order = i));
+
+    // 迭代减少交叉（ median 启发式）
+    for (let iter = 0; iter < 10; iter++) {
+      for (let li = 0; li < layers.length; li++) {
+        const L = layers[li];
+        if (!L) continue;
+        L.forEach(n => {
+          const preds = normalConns
+            .filter(e => String(e.dst_id) === String(n.id))
+            .map(e => this.nodes.get(String(e.src_id)))
+            .filter(Boolean);
+          if (preds.length) {
+            const vals = preds.map(p => p.order).sort((a, b) => a - b);
+            n._med = vals[Math.floor(vals.length / 2)];
+          } else {
+            n._med = n.order;
+          }
+        });
+        L.sort((a, b) => a._med - b._med);
+        L.forEach((n, i) => n.order = i);
+      }
+      for (let li = layers.length - 1; li >= 0; li--) {
+        const L = layers[li];
+        if (!L) continue;
+        L.forEach(n => {
+          const succs = normalConns
+            .filter(e => String(e.src_id) === String(n.id))
+            .map(e => this.nodes.get(String(e.dst_id)))
+            .filter(Boolean);
+          if (succs.length) {
+            const vals = succs.map(p => p.order).sort((a, b) => a - b);
+            n._med = vals[Math.floor(vals.length / 2)];
+          } else {
+            n._med = n.order;
+          }
+        });
+        L.sort((a, b) => a._med - b._med);
+        L.forEach((n, i) => n.order = i);
+      }
+    }
+
+    // 分配坐标
+    const GAP_X = 180;
+    const GAP_Y = 120;
+    const offsetX = 100;
+    const offsetY = 80;
+
+    this.nodes.forEach(n => {
+      n.x = n.layer * GAP_X + offsetX;
+      n.y = n.order * GAP_Y + offsetY;
+    });
+
+    // Y 方向力导向微调：吸引向邻居平均 Y，同层节点互相排斥
+    for (let iter = 0; iter < 60; iter++) {
+      this.nodes.forEach(n => {
+        if (n.id === 'SOURCE' || n.id === 'OUTPUT') return; // 虚拟节点单独调整
+        let fy = 0;
+        // 吸引：邻居平均 Y
+        const neighbors = [];
+        normalConns.forEach(e => {
+          if (String(e.src_id) === String(n.id)) {
+            const dst = this.nodes.get(String(e.dst_id));
+            if (dst) neighbors.push(dst);
+          }
+          if (String(e.dst_id) === String(n.id)) {
+            const src = this.nodes.get(String(e.src_id));
+            if (src) neighbors.push(src);
+          }
+        });
+        if (neighbors.length) {
+          const avg = neighbors.reduce((s, p) => s + p.y, 0) / neighbors.length;
+          fy += (avg - n.y) * 0.12;
+        }
+        // 排斥：同层节点
+        const layerMates = layers[n.layer];
+        if (layerMates) {
+          layerMates.forEach(other => {
+            if (other === n) return;
+            const dy = n.y - other.y;
+            const dist = Math.abs(dy);
+            if (dist < GAP_Y && dist > 0.1) {
+              fy += (dy > 0 ? 1 : -1) * (GAP_Y - dist) * 0.5;
+            }
+          });
+        }
+        n.y += fy;
+      });
+    }
+
+    // 虚拟输入/输出节点
+    const hasIn = new Set(normalConns.map(e => String(e.dst_id)));
+    const sources = [];
+    this.nodes.forEach((n, id) => { if (!hasIn.has(id)) sources.push(n); });
+
+    const hasOut = new Set(normalConns.map(e => String(e.src_id)));
+    const sinks = [];
+    this.nodes.forEach((n, id) => { if (!hasOut.has(id)) sinks.push(n); });
+
+    const maxLayer = Math.max(0, ...Array.from(this.nodes.values()).map(n => n.layer));
+
+    if (sources.length) {
+      const inNode = {
+        id: 'INPUT', name: '输入', type: 'io',
+        x: offsetX - GAP_X,
+        y: sources.reduce((s, n) => s + n.y, 0) / sources.length,
+        w: 72, h: 72, isVirtual: true
+      };
+      this.nodes.set('INPUT', inNode);
+      sources.forEach((n, idx) => {
+        this.edges.push({ src: inNode, dst: n, isFeedback: false, isVirtual: true, srcPort: idx });
+      });
+    }
+
+    if (sinks.length) {
+      const outNode = {
+        id: 'OUTPUT', name: '输出', type: 'io',
+        x: (maxLayer + 1) * GAP_X + offsetX + GAP_X,
+        y: sinks.reduce((s, n) => s + n.y, 0) / sinks.length,
+        w: 72, h: 72, isVirtual: true
+      };
+      this.nodes.set('OUTPUT', outNode);
+      sinks.forEach((n, idx) => {
+        this.edges.push({ src: n, dst: outNode, isFeedback: false, isVirtual: true, dstPort: idx });
+      });
+    }
+
+    // 真实边
+    normalConns.forEach(c => {
+      const src = this.nodes.get(String(c.src_id));
+      const dst = this.nodes.get(String(c.dst_id));
+      if (src && dst) {
+        this.edges.push({ src, dst, srcPort: c.src_port, dstPort: c.dst_port, isFeedback: false, data: c });
+      }
+    });
+    fbConns.forEach(c => {
+      const src = this.nodes.get(String(c.src_id));
+      const dst = this.nodes.get(String(c.dst_id));
+      if (src && dst) {
+        this.edges.push({ src, dst, srcPort: c.src_port, dstPort: c.dst_port, isFeedback: true, data: c });
+      }
+    });
+  }
+
+  // ---------- 边路由（层间通道绕行） ----------
+  computeEdgeRoutes() {
+    // 统计每个节点的出入度，用于 io 节点端口分布
+    const outCounts = new Map(), inCounts = new Map();
+    this.edges.forEach(e => {
+      const sid = String(e.src.id);
+      const did = String(e.dst.id);
+      outCounts.set(sid, (outCounts.get(sid) || 0) + 1);
+      inCounts.set(did, (inCounts.get(did) || 0) + 1);
+    });
+    this.nodes.forEach(n => {
+      n._outCount = outCounts.get(String(n.id)) || 1;
+      n._inCount = inCounts.get(String(n.id)) || 1;
+    });
+
+    const portPos = (node, isOutput, portIdx) => {
+      const px = node.x + (isOutput ? node.w / 2 : -node.w / 2);
+      let py = node.y;
+      if (node.type === 'io') {
+        const count = isOutput ? node._outCount : node._inCount;
+        const step = node.h / (count + 1);
+        py = node.y - node.h / 2 + step * (portIdx + 1);
+      } else if (node.type === 'splitter' && isOutput) {
+        const rt = node.data.ratio_type;
+        if (rt === 2) {
+          py += (portIdx === 0 ? -node.h * 0.22 : node.h * 0.22);
+        } else if (rt === 3) {
+          if (portIdx === 0) py -= node.h * 0.28;
+          else if (portIdx === 2) py += node.h * 0.28;
+        }
+      } else if (node.type === 'merger' && !isOutput) {
+        const ic = node.data.input_count;
+        if (ic === 2) {
+          py += (portIdx === 0 ? -node.h * 0.22 : node.h * 0.22);
+        } else if (ic === 3) {
+          if (portIdx === 0) py -= node.h * 0.28;
+          else if (portIdx === 2) py += node.h * 0.28;
+        }
+      }
+      return { x: px, y: py };
+    };
+
+    // 构建障碍物列表（所有节点边界框，留 6px 间距）
+    const obstacles = Array.from(this.nodes.values()).map(n => ({
+      x1: n.x - n.w / 2 - 6,
+      x2: n.x + n.w / 2 + 6,
+      y1: n.y - n.h / 2 - 6,
+      y2: n.y + n.h / 2 + 6,
+      node: n
+    }));
+
+    function hitTestY(y, x1, x2, excludeNodes) {
+      const ex = new Set(excludeNodes.map(n => String(n.id)));
+      return obstacles.some(b => !ex.has(String(b.node.id)) && b.x1 < x2 && b.x2 > x1 && b.y1 < y && b.y2 > y);
+    }
+
+    function hitTestX(x, y1, y2, excludeNodes) {
+      const ex = new Set(excludeNodes.map(n => String(n.id)));
+      return obstacles.some(b => !ex.has(String(b.node.id)) && b.y1 < y2 && b.y2 > y1 && b.x1 < x && b.x2 > x);
+    }
+
+    function findSafeY(baseY, x1, x2, excludeNodes) {
+      if (!hitTestY(baseY, x1, x2, excludeNodes)) return baseY;
+      for (let d = 12; d < 600; d += 12) {
+        if (!hitTestY(baseY - d, x1, x2, excludeNodes)) return baseY - d;
+        if (!hitTestY(baseY + d, x1, x2, excludeNodes)) return baseY + d;
+      }
+      return baseY;
+    }
+
+    // 收集有 layer 属性的实体节点（非虚拟），按 layer 分组
+    const layerNodes = new Map();
+    this.nodes.forEach(n => {
+      if (n.isVirtual || n.layer === undefined || n.layer === null) return;
+      if (!layerNodes.has(n.layer)) layerNodes.set(n.layer, []);
+      layerNodes.get(n.layer).push(n);
+    });
+
+    const sortedLayers = [...layerNodes.keys()].sort((a, b) => a - b);
+
+    // 计算层间通道 (gutter) 的 X 坐标
+    const gutterX = new Map(); // key = "L1_L2"
+    for (let i = 0; i < sortedLayers.length - 1; i++) {
+      const l = sortedLayers[i];
+      const r = sortedLayers[i + 1];
+      const leftNodes = layerNodes.get(l);
+      const rightNodes = layerNodes.get(r);
+      const leftEdge = Math.max(...leftNodes.map(n => n.x + n.w / 2));
+      const rightEdge = Math.min(...rightNodes.map(n => n.x - n.w / 2));
+      const gutter = (leftEdge + rightEdge) / 2;
+      gutterX.set(`${l}_${r}`, gutter);
+      gutterX.set(`${r}_${l}`, gutter);
+    }
+
+    // 合成边界通道：最左层左侧、最右层右侧
+    const firstLayerNodes = layerNodes.get(sortedLayers[0]);
+    const lastLayerNodes = layerNodes.get(sortedLayers[sortedLayers.length - 1]);
+    const leftBoundaryGutter = Math.min(...firstLayerNodes.map(n => n.x - n.w / 2)) - 60;
+    const rightBoundaryGutter = Math.max(...lastLayerNodes.map(n => n.x + n.w / 2)) + 60;
+
+    // 获取节点所在层右侧第一个通道 X
+    function gutterAfter(layer) {
+      for (let i = 0; i < sortedLayers.length - 1; i++) {
+        if (sortedLayers[i] === layer) {
+          return gutterX.get(`${sortedLayers[i]}_${sortedLayers[i + 1]}`);
+        }
+      }
+      // 最右层：使用合成右侧通道
+      if (layer === sortedLayers[sortedLayers.length - 1]) return rightBoundaryGutter;
+      return null;
+    }
+
+    // 获取节点所在层左侧第一个通道 X
+    function gutterBefore(layer) {
+      for (let i = 1; i < sortedLayers.length; i++) {
+        if (sortedLayers[i] === layer) {
+          return gutterX.get(`${sortedLayers[i - 1]}_${sortedLayers[i]}`);
+        }
+      }
+      // 最左层：使用合成左侧通道
+      if (layer === sortedLayers[0]) return leftBoundaryGutter;
+      return null;
+    }
+
+    // 找到整个 X 跨度的安全 Y（同时检查该 Y 在所有中间层的垂直段处是否安全）
+    function findGlobalSafeY(baseY, x1, x2, excludeNodes, extraCheckXs) {
+      const checkXs = extraCheckXs || [];
+      function isClear(y) {
+        if (hitTestY(y, x1, x2, excludeNodes)) return false;
+        for (const cx of checkXs) {
+          // 垂直段会经过这个X，需要检查该X处 y±范围 是否碰到障碍物
+          // 我们用一个小范围来近似检查
+          if (hitTestX(cx, y - 2, y + 2, excludeNodes)) return false;
+        }
+        return true;
+      }
+      if (isClear(baseY)) return baseY;
+      for (let d = 12; d < 600; d += 12) {
+        if (isClear(baseY - d)) return baseY - d;
+        if (isClear(baseY + d)) return baseY + d;
+      }
+      return baseY;
+    }
+
+    this.edges.forEach(e => {
+      const sp = portPos(e.src, true, e.srcPort || 0);
+      const dp = portPos(e.dst, false, e.dstPort || 0);
+      const exclude = [e.src, e.dst];
+
+      // ---- 反馈边：从上方绕过（src 层号 > dst 层号，从右向左走） ----
+      if (e.isFeedback) {
+        const sl2 = e.src.layer, dl2 = e.dst.layer;
+        const goAboveY = Math.min(sp.y, dp.y) - 55;
+        let topPathY, path;
+        if (sl2 !== undefined && dl2 !== undefined && sl2 > dl2) {
+          // 从右向左：源右侧通道出发 → 上方绕行 → 目标左侧通道进入
+          const g1 = gutterAfter(sl2);
+          const g2 = gutterBefore(dl2);
+          topPathY = findGlobalSafeY(goAboveY, Math.min(g1, g2), Math.max(g1, g2), exclude, [g1, g2]);
+          if (g1 === g2) {
+            path = [sp, { x: g1, y: sp.y }, { x: g1, y: topPathY }, { x: g1, y: dp.y }, dp];
+          } else {
+            path = [sp, { x: g1, y: sp.y }, { x: g1, y: topPathY }, { x: g2, y: topPathY }, { x: g2, y: dp.y }, dp];
+          }
+        } else if (sl2 !== undefined && dl2 !== undefined && sl2 < dl2) {
+          // 从左向右的反馈：源右侧通道出发 → 上方绕行 → 目标左侧通道进入
+          const g1 = gutterAfter(sl2);
+          const g2 = gutterBefore(dl2);
+          topPathY = findGlobalSafeY(goAboveY, Math.min(g1, g2), Math.max(g1, g2), exclude, [g1, g2]);
+          if (g1 === g2) {
+            path = [sp, { x: g1, y: sp.y }, { x: g1, y: topPathY }, { x: g1, y: dp.y }, dp];
+          } else {
+            path = [sp, { x: g1, y: sp.y }, { x: g1, y: topPathY }, { x: g2, y: topPathY }, { x: g2, y: dp.y }, dp];
+          }
+        } else {
+          // 无法确定层：简单上绕
+          topPathY = findSafeY(goAboveY, Math.min(sp.x, dp.x), Math.max(sp.x, dp.x), exclude);
+          path = [sp, { x: sp.x, y: topPathY }, { x: dp.x, y: topPathY }, dp];
+        }
+        e.path = path;
+        return;
+      }
+
+      // ---- 虚拟边（INPUT/OUTPUT）：简单通道路由 ----
+      if (e.isVirtual) {
+        const midX = (sp.x + dp.x) / 2;
+        const safeY = findSafeY(dp.y, sp.x, dp.x, exclude);
+        e.path = [sp, { x: midX, y: sp.y }, { x: midX, y: safeY }, { x: dp.x, y: safeY }, dp];
+        return;
+      }
+
+      // ---- 同层边：从上方或下方绕过 ----
+      const sl = e.src.layer;
+      const dl = e.dst.layer;
+      if (sl === dl || (sl === undefined || dl === undefined)) {
+        // 同层或无法确定层：尝试从侧面绕过
+        const goAboveY = Math.min(sp.y, dp.y) - 50;
+        const topY = findSafeY(goAboveY, Math.min(sp.x, dp.x), Math.max(sp.x, dp.x), exclude);
+        e.path = [sp, { x: sp.x, y: topY }, { x: dp.x, y: topY }, dp];
+        return;
+      }
+
+      // ---- 正常前向/反向边：使用层间通道路由 ----
+      const isForward = sl < dl;
+
+      if (isForward) {
+        // 源在左侧，目标在右侧
+        const g1 = gutterAfter(sl); // 源层右侧通道
+        const g2 = gutterBefore(dl); // 目标层左侧通道
+
+        if (g1 && g2 && g1 === g2) {
+          // 相邻层，只有一个通道
+          const safeY = findGlobalSafeY((sp.y + dp.y) / 2, sp.x, dp.x, exclude, [g1]);
+          e.path = [
+            sp,
+            { x: g1, y: sp.y },
+            { x: g1, y: safeY },
+            { x: g1, y: dp.y },
+            dp
+          ];
+        } else if (g1 && g2) {
+          // 多个通道：水平->竖直(g1)->水平->竖直(g2)->水平
+          const midGutterX = (g1 + g2) / 2;
+          const safeY = findGlobalSafeY((sp.y + dp.y) / 2, sp.x, dp.x, exclude, [g1, g2, midGutterX]);
+          e.path = [
+            sp,
+            { x: g1, y: sp.y },
+            { x: g1, y: safeY },
+            { x: g2, y: safeY },
+            { x: g2, y: dp.y },
+            dp
+          ];
+        } else if (g1) {
+          const safeY = findGlobalSafeY(dp.y, sp.x, dp.x, exclude, [g1, dp.x]);
+          e.path = [sp, { x: g1, y: sp.y }, { x: g1, y: safeY }, { x: dp.x, y: safeY }, dp];
+        } else if (g2) {
+          const safeY = findGlobalSafeY(sp.y, sp.x, dp.x, exclude, [sp.x, g2]);
+          e.path = [sp, { x: sp.x, y: safeY }, { x: g2, y: safeY }, { x: g2, y: dp.y }, dp];
+        } else {
+          const safeY = findGlobalSafeY((sp.y + dp.y) / 2, sp.x, dp.x, exclude, [sp.x, dp.x]);
+          e.path = [sp, { x: sp.x, y: safeY }, { x: dp.x, y: safeY }, dp];
+        }
+      } else {
+        // 反向边（源在右侧，目标在左侧）
+        const g1 = gutterBefore(sl); // 源层左侧通道
+        const g2 = gutterAfter(dl);  // 目标层右侧通道
+
+        if (g1 && g2) {
+          const safeY = findGlobalSafeY((sp.y + dp.y) / 2, dp.x, sp.x, exclude, [g1, g2]);
+          e.path = [
+            sp,
+            { x: g1, y: sp.y },
+            { x: g1, y: safeY },
+            { x: g2, y: safeY },
+            { x: g2, y: dp.y },
+            dp
+          ];
+        } else if (g1) {
+          const safeY = findGlobalSafeY(dp.y, dp.x, sp.x, exclude, [g1, dp.x]);
+          e.path = [sp, { x: g1, y: sp.y }, { x: g1, y: safeY }, { x: dp.x, y: safeY }, dp];
+        } else if (g2) {
+          const safeY = findGlobalSafeY(sp.y, dp.x, sp.x, exclude, [sp.x, g2]);
+          e.path = [sp, { x: sp.x, y: safeY }, { x: g2, y: safeY }, { x: g2, y: dp.y }, dp];
+        } else {
+          const safeY = findGlobalSafeY((sp.y + dp.y) / 2, dp.x, sp.x, exclude, [sp.x, dp.x]);
+          e.path = [sp, { x: sp.x, y: safeY }, { x: dp.x, y: safeY }, dp];
+        }
+      }
+    });
+  }
+
+  // ---------- 检测物流桥（交叉点） ----------
+  detectBridges() {
+    this.bridges = [];
+    const segs = [];
+    this.edges.forEach((e, ei) => {
+      for (let i = 0; i < e.path.length - 1; i++) {
+        const a = e.path[i], b = e.path[i + 1];
+        const isH = Math.abs(a.y - b.y) < 1;
+        segs.push({ a, b, ei, isH, minX: Math.min(a.x, b.x), maxX: Math.max(a.x, b.x), minY: Math.min(a.y, b.y), maxY: Math.max(a.y, b.y) });
+      }
+    });
+
+    for (let i = 0; i < segs.length; i++) {
+      for (let j = i + 1; j < segs.length; j++) {
+        const s1 = segs[i], s2 = segs[j];
+        if (s1.isH === s2.isH) continue;
+        const h = s1.isH ? s1 : s2;
+        const v = s1.isH ? s2 : s1;
+        const hx = h.minX, hX = h.maxX, hy = h.a.y;
+        const vx = v.a.x, vy = v.minY, vY = v.maxY;
+        if (vx > hx + 2 && vx < hX - 2 && hy > vy + 2 && hy < vY - 2) {
+          this.bridges.push({ x: vx, y: hy });
+        }
+      }
+    }
+  }
+
+  // ---------- 粒子系统 ----------
+  initParticles() {
+    this.particles = [];
+    this.edges.forEach((e, i) => {
+      if (e.isVirtual) return;
+      const count = e.isFeedback ? 1 : 2;
+      for (let k = 0; k < count; k++) {
+        this.particles.push({ edgeIdx: i, t: Math.random(), speed: 0.25 + Math.random() * 0.3 });
+      }
+    });
+  }
+
+  updateParticles(dt) {
+    if (!this.animating) return;
+    this.particles.forEach(p => {
+      p.t += p.speed * dt * 0.001;
+      if (p.t > 1) p.t -= 1;
+    });
+  }
+
+  pointOnPath(path, t) {
+    let total = 0;
+    const lens = [];
+    for (let i = 0; i < path.length - 1; i++) {
+      const dx = path[i + 1].x - path[i].x;
+      const dy = path[i + 1].y - path[i].y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      lens.push(len);
+      total += len;
+    }
+    if (total === 0) return path[0];
+    let target = t * total;
+    for (let i = 0; i < path.length - 1; i++) {
+      if (target <= lens[i]) {
+        const r = lens[i] === 0 ? 0 : target / lens[i];
+        return {
+          x: path[i].x + (path[i + 1].x - path[i].x) * r,
+          y: path[i].y + (path[i + 1].y - path[i].y) * r
+        };
+      }
+      target -= lens[i];
+    }
+    return path[path.length - 1];
+  }
+
+  // ---------- 绘制 ----------
+  draw() {
+    const ctx = this.ctx;
+    const W = this.canvas.width, H = this.canvas.height;
+
+    // 背景（草地色）
+    ctx.fillStyle = '#1a2f1a';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.save();
+    ctx.translate(this.camera.x + W / 2, this.camera.y + H / 2);
+    ctx.scale(this.camera.zoom, this.camera.zoom);
+    ctx.translate(-W / 2, -H / 2);
+
+    // 传送带阴影/底色
+    this.edges.forEach(e => {
+      ctx.beginPath();
+      ctx.moveTo(e.path[0].x, e.path[0].y);
+      for (let i = 1; i < e.path.length; i++) ctx.lineTo(e.path[i].x, e.path[i].y);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = e.isFeedback ? 6 : 8;
+      ctx.strokeStyle = e.isFeedback ? '#d35400' : '#b7950b'; // 暗底色
+      ctx.stroke();
+    });
+
+    // 传送带高亮
+    this.edges.forEach(e => {
+      ctx.beginPath();
+      ctx.moveTo(e.path[0].x, e.path[0].y);
+      for (let i = 1; i < e.path.length; i++) ctx.lineTo(e.path[i].x, e.path[i].y);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = e.isFeedback ? 3 : 4;
+      ctx.strokeStyle = e.isFeedback ? '#f39c12' : '#f1c40f'; // 亮黄色
+      if (e.isFeedback) {
+        ctx.setLineDash([6, 5]);
+      } else {
+        ctx.setLineDash([]);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    });
+
+    // 物流桥（交叉点）
+    this.bridges.forEach(b => {
+      // 底层黄块
+      ctx.fillStyle = '#f1c40f';
+      ctx.fillRect(b.x - 9, b.y - 9, 18, 18);
+      // 边框
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(b.x - 9, b.y - 9, 18, 18);
+      // 内部小叉
+      ctx.beginPath();
+      ctx.moveTo(b.x - 4, b.y - 4); ctx.lineTo(b.x + 4, b.y + 4);
+      ctx.moveTo(b.x + 4, b.y - 4); ctx.lineTo(b.x - 4, b.y + 4);
+      ctx.strokeStyle = '#b7950b';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    });
+
+    // 节点
+    this.nodes.forEach(n => {
+      const x = n.x - n.w / 2, y = n.y - n.h / 2;
+
+      // 阴影
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.fillRect(x + 4, y + 4, n.w, n.h);
+
+      if (n.type === 'io') {
+        // 输入/输出大方块
+        const grad = ctx.createLinearGradient(x, y, x + n.w, y + n.h);
+        grad.addColorStop(0, '#34495e');
+        grad.addColorStop(1, '#2c3e50');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, n.w, n.h);
+        ctx.strokeStyle = '#e67e22';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x, y, n.w, n.h);
+
+        // 橙色箭头
+        ctx.fillStyle = '#e67e22';
+        ctx.beginPath();
+        const dir = n.id === 'INPUT' ? -1 : 1;
+        ctx.moveTo(n.x + dir * 14, n.y - 12);
+        ctx.lineTo(n.x + dir * 26, n.y);
+        ctx.lineTo(n.x + dir * 14, n.y + 12);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 13px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(n.name, n.x, n.y + 5);
+      } else if (n.type === 'splitter') {
+        // 分流器：红色
+        const grad = ctx.createLinearGradient(x, y, x + n.w, y + n.h);
+        grad.addColorStop(0, '#e74c3c');
+        grad.addColorStop(1, '#c0392b');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, n.w, n.h);
+        ctx.strokeStyle = '#f5b7b1';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, n.w, n.h);
+
+        // 内部箭头（指向右）
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.beginPath();
+        ctx.moveTo(n.x + 10, n.y);
+        ctx.lineTo(n.x - 6, n.y - 9);
+        ctx.lineTo(n.x - 6, n.y + 9);
+        ctx.closePath();
+        ctx.fill();
+
+        // 端口小点
+        const rt = n.data.ratio_type;
+        const outs = rt === 2 ? [0, 1] : [0, 1, 2];
+        outs.forEach((pi, idx) => {
+          const oy = n.y + (rt === 2 ? (idx === 0 ? -10 : 10) : (idx - 1) * 12);
+          ctx.beginPath();
+          ctx.arc(n.x + n.w / 2 + 2, oy, 3, 0, Math.PI * 2);
+          ctx.fillStyle = '#f1c40f';
+          ctx.fill();
+        });
+      } else if (n.type === 'merger') {
+        // 集流器：白色
+        const grad = ctx.createLinearGradient(x, y, x + n.w, y + n.h);
+        grad.addColorStop(0, '#ecf0f1');
+        grad.addColorStop(1, '#bdc3c7');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, n.w, n.h);
+        ctx.strokeStyle = '#7f8c8d';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, n.w, n.h);
+
+        // 内部汇聚箭头（指向左）
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.beginPath();
+        ctx.moveTo(n.x - 10, n.y);
+        ctx.lineTo(n.x + 6, n.y - 9);
+        ctx.lineTo(n.x + 6, n.y + 9);
+        ctx.closePath();
+        ctx.fill();
+
+        // 端口小点
+        const ic = n.data.input_count;
+        const ins = ic === 2 ? [0, 1] : [0, 1, 2];
+        ins.forEach((pi, idx) => {
+          const oy = n.y + (ic === 2 ? (idx === 0 ? -10 : 10) : (idx - 1) * 12);
+          ctx.beginPath();
+          ctx.arc(n.x - n.w / 2 - 2, oy, 3, 0, Math.PI * 2);
+          ctx.fillStyle = '#f1c40f';
+          ctx.fill();
+        });
+      }
+
+      // 名称标签（IO 节点已内部标注，跳过）
+      if (!n.isVirtual) {
+        ctx.fillStyle = '#fff';
+        ctx.font = '11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(n.name, n.x, y + n.h + 16);
+      }
+    });
+
+    // 流动粒子
+    this.particles.forEach(p => {
+      const edge = this.edges[p.edgeIdx];
+      if (!edge) return;
+      const pt = this.pointOnPath(edge.path, p.t);
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff';
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = 'rgba(255,255,255,0.9)';
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    });
+
+    ctx.restore();
+  }
+
+  loop() {
+    const now = performance.now();
+    const dt = now - (this.lastTime || now);
+    this.lastTime = now;
+
+    this.updateParticles(dt);
+    this.draw();
+    requestAnimationFrame(() => this.loop());
+  }
+}
+
+const app = new Visualizer();
+</script>
+</body>
+</html>
