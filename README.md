@@ -2,7 +2,7 @@
 
 > **仅用 1/2、1/3 两种分流器 + 集流器，构造任意正有理数分流网络。**
 
-给定任意有理数 $\frac{n}{m}$，自动构造由 1/2、1/3 分流器和集流器组成的物流网络，其稳态输出恰好等于 $\frac{n}{m}$。完整数学证明及优化算法见 [prove.md](prove.md)。
+给定任意有理数 ![n/m](https://latex.codecogs.com/svg.image?\frac{n}{m})，自动构造由 1/2、1/3 分流器和集流器组成的物流网络，其稳态输出恰好等于 ![n/m](https://latex.codecogs.com/svg.image?\frac{n}{m})。完整数学证明及优化算法见 [prove.md](prove.md)
 
 ![114/514 游戏设计](114_514.png)
 
@@ -16,37 +16,37 @@
 
 | 运算       | 规则                           | 效果          |
 | ---------- | ------------------------------ | ------------- |
-| **串联**   | 分流系数 $a$ 串联 $b$          | 总系数 $a \cdot b$ |
-| **并联**   | 分流系数 $a$ 并联 $b$，输出汇流 | 总系数 $a + b$    |
+| **串联**   | 分流系数 a 串联 b          | 总系数 ![a·b](https://latex.codecogs.com/svg.image?a%20\cdot%20b) |
+| **并联**   | 分流系数 a 并联 b，输出汇流 | 总系数 ![a+b](https://latex.codecogs.com/svg.image?a%20+%20b)    |
 
-已知基底：$\frac12$、$\frac13$。目标：构造任意正有理数 $\frac{n}{m}$。
+已知基底：![1/2](https://latex.codecogs.com/svg.image?\frac{1}{2})、![1/3](https://latex.codecogs.com/svg.image?\frac{1}{3})。目标：构造任意正有理数 ![n/m](https://latex.codecogs.com/svg.image?\frac{n}{m})。
 
 ### 核心思路
 
-只需构造所有**单位分数** $\frac1m$（$m$ 为任意正整数），再将 $n$ 个 $\frac1m$ 并联相加即得 $\frac{n}{m}$。
+只需构造所有**单位分数** ![1/m](https://latex.codecogs.com/svg.image?\frac{1}{m})（m 为任意正整数），再将 n 个 ![1/m](https://latex.codecogs.com/svg.image?\frac{1}{m}) 并联相加即得 ![n/m](https://latex.codecogs.com/svg.image?\frac{n}{m})。
 
-**引理 1（反馈回路）**：若 $\frac1k$ 可构造，则 $\frac1{k-1}$ 也可构造。
+**引理 1（反馈回路）**：若 ![1/k](https://latex.codecogs.com/svg.image?\frac{1}{k}) 可构造，则 ![1/(k-1)](https://latex.codecogs.com/svg.image?\frac{1}{k-1}) 也可构造。
 
-**引理 2（质数递推）**：对任意奇质数 $p$：
+**引理 2（质数递推）**：对任意奇质数 p：
 
-$$\frac1p = \frac{2}{p+1} = \frac{1}{t} \cdot \frac12,\quad t = \frac{p+1}{2} < p$$
+![1/p formula](https://latex.codecogs.com/svg.image?\frac{1}{p}%20=%20\frac{2}{p+1}%20=%20\frac{1}{t}%20\cdot%20\frac{1}{2},%20\quad%20t%20=%20\frac{p+1}{2}%20<%20p)
 
 由数学归纳法，所有质数倒数均可由更小分母递推构造。
 
-**引理 3（合数分解）**：合数 $m = \prod p_i^{a_i}$，则 $\frac1m = \prod \big(\frac1{p_i}\big)^{a_i}$（串联）。
+**引理 3（合数分解）**：合数 ![m = ∏p_i^(a_i)](https://latex.codecogs.com/svg.image?m%20=%20\prod%20p_i^{a_i})，则 ![1/m = ∏(1/p_i)^(a_i)](https://latex.codecogs.com/svg.image?\frac{1}{m}%20=%20\prod%20\big(\frac{1}{p_i}\big)^{a_i})（串联）。
 
 ### 结论
 
-> **仅使用 $\frac12$、$\frac13$ 分流器的串联、并联、反馈组合，可构造任意正有理数。**
+> **仅使用 ![1/2](https://latex.codecogs.com/svg.image?\frac{1}{2})、![1/3](https://latex.codecogs.com/svg.image?\frac{1}{3}) 分流器的串联、并联、反馈组合，可构造任意正有理数。**
 
 <details>
-<summary>📐 点击展开：十万级质数 $p=100003$ 构造演示</summary>
+<summary>📐 点击展开：十万级质数 p=100003 构造演示</summary>
 
-$$\frac1{100003} = \frac{2}{100004} = \frac{1}{50002} \cdot \frac12$$
+![1/100003 decomposition](https://latex.codecogs.com/svg.image?\frac{1}{100003}%20=%20\frac{2}{100004}%20=%20\frac{1}{50002}%20\cdot%20\frac{1}{2})
 
-$$50002 = 2 \times 23 \times 1087$$
+![50002 factorization](https://latex.codecogs.com/svg.image?50002%20=%202%20\times%2023%20\times%201087)
 
-逐层分解质因数，最终全部归约为 $\frac12$、$\frac13$ 的嵌套串联与反馈。构造出 $\frac1{100003}$ 后，并联 72 路即得 $\frac{72}{100003}$。
+逐层分解质因数，最终全部归约为 ![1/2](https://latex.codecogs.com/svg.image?\frac{1}{2})、![1/3](https://latex.codecogs.com/svg.image?\frac{1}{3}) 的嵌套串联与反馈。构造出 ![1/100003](https://latex.codecogs.com/svg.image?\frac{1}{100003}) 后，并联 72 路即得 ![72/100003](https://latex.codecogs.com/svg.image?\frac{72}{100003})。
 
 </details>
 
@@ -56,7 +56,7 @@ $$50002 = 2 \times 23 \times 1087$$
 
 | 文件                    | 功能                                                  |
 | ----------------------- | ----------------------------------------------------- |
-| `flow_simulator.py`   | 核心引擎：构造 $\frac{n}{m}$ 分流器网络，导出 JSON   |
+| `flow_simulator.py`   | 核心引擎：构造 ![n/m](https://latex.codecogs.com/svg.image?\frac{n}{m}) 分流器网络，导出 JSON   |
 | `visualizer.html`     | 浏览器可视化：交互式三维拓扑图，含流动粒子动画        |
 | `validate_network.py` | 验证器：读取 JSON，9 步校验网络拓扑与稳态流量的正确性 |
 | `prove.md`            | 完整数学证明：可行性 + 优化算法                       |
@@ -123,23 +123,21 @@ python validate_network.py network_72_100003.json --expected "72/100003"
 
 | 组件                 | 行为                                 |
 | -------------------- | ------------------------------------ |
-| **1/2 分流器**       | 输入 $a$，两路输出各 $\frac{a}{2}$   |
-| **1/3 分流器**       | 输入 $a$，三路输出各 $\frac{a}{3}$   |
+| **1/2 分流器**       | 输入 a，两路输出各 ![a/2](https://latex.codecogs.com/svg.image?\frac{a}{2})   |
+| **1/3 分流器**       | 输入 a，三路输出各 ![a/3](https://latex.codecogs.com/svg.image?\frac{a}{3})   |
 | **集流器 (Merger)**  | 多路输入求和，单路输出               |
 
 ## 构造策略
 
-- **合数分母** $k = a \times b$：串联 $\frac1a \to \frac1b$，输出 $\frac1k$
-- **质数分母** $p$：反馈方程 $(1 + x) \cdot \frac{1}{p+1} = x \implies x = \frac1p$
-- **分子拆分** $\frac{n}{m}$：贪心拆分为 $\sum c_i \cdot \frac{1}{m/d_i}$，集流器汇总
-                      └─── 反馈 (1/p) ←───────────┘
-```
+- **合数分母** ![k = a×b](https://latex.codecogs.com/svg.image?k%20=%20a%20\times%20b)：串联 ![1/a](https://latex.codecogs.com/svg.image?\frac{1}{a}) → ![1/b](https://latex.codecogs.com/svg.image?\frac{1}{b})，输出 ![1/k](https://latex.codecogs.com/svg.image?\frac{1}{k})
+- **质数分母** p：反馈方程 ![(1+x)·1/(p+1) = x ⟹ x = 1/p](https://latex.codecogs.com/svg.image?(1%20+%20x)%20\cdot%20\frac{1}{p+1}%20=%20x%20\implies%20x%20=%20\frac{1}{p})
+- **分子拆分** ![n/m](https://latex.codecogs.com/svg.image?\frac{n}{m})：贪心拆分为 ![∑c_i·1/(m/d_i)](https://latex.codecogs.com/svg.image?\sum%20c_i%20\cdot%20\frac{1}{m/d_i})，集流器汇总
 
-稳定态下，Merger 输入 = 外部 1 + 反馈 1/p = (p+1)/p，经过 1/(p+1) 后输出恰好为 1/p。
+稳定态下，Merger 输入 = 外部 1 + 反馈 ![1/p](https://latex.codecogs.com/svg.image?\frac{1}{p}) = ![(p+1)/p](https://latex.codecogs.com/svg.image?\frac{p+1}{p})，经过 ![1/(p+1)](https://latex.codecogs.com/svg.image?\frac{1}{p+1}) 后输出恰好为 ![1/p](https://latex.codecogs.com/svg.image?\frac{1}{p})。
 
 ### Pool 闲置输出复用
 
-在 feedback 结构中，1/3 分流器会多出一个闲置输出端口（值也为 1/p），被缓存进 Pool。后续构造同一值时优先从 Pool 复用，减少组件数量。
+在 feedback 结构中，1/3 分流器会多出一个闲置输出端口（值也为 ![1/p](https://latex.codecogs.com/svg.image?\frac{1}{p})），被缓存进 Pool。后续构造同一值时优先从 Pool 复用，减少组件数量。
 
 ---
 
